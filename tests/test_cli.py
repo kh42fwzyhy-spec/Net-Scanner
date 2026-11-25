@@ -12,6 +12,7 @@ from unittest import mock
 
 from switchscan.cli import Prompter, build_options, parse_args, topology_name
 from switchscan.model import Device, Topology
+from switchscan.scanner import UNLIMITED
 
 
 def scripted(answers: list[str], secrets: list[str]) -> tuple[Prompter, io.StringIO]:
@@ -31,20 +32,20 @@ class PromptTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_menu_then_v2c_community(self):
-        p, out = scripted(["1"], ["s3cret"])
+        p, out = scripted(["1", "n"], ["s3cret"])
         opts, desc = build_options(parse_args(["10.0.0.1"]), p)
         self.assertEqual((opts.snmp.version, opts.snmp.community), ("2c", "s3cret"))
         self.assertIn("How should switchscan log in", out.getvalue())
         self.assertEqual(desc, "SNMPv2c")
 
     def test_v2c_blank_community_defaults_to_public(self):
-        p, _ = scripted([""], [""])
+        p, _ = scripted(["", ""], [""])
         opts, _ = build_options(parse_args(["10.0.0.1"]), p)
         self.assertEqual(opts.snmp.community, "public")
 
     def test_v3_full_prompt_with_retry_on_short_passphrase(self):
         # method 2 = v3, user, auth proto sha256 (2), priv proto default (Enter)
-        p, out = scripted(["2", "netops", "2", ""], ["short", "authpass123", "privpass123"])
+        p, out = scripted(["2", "netops", "2", "", "n"], ["short", "authpass123", "privpass123"])
         opts, desc = build_options(parse_args(["10.0.0.1"]), p)
         c = opts.snmp
         self.assertEqual((c.version, c.user, c.auth_protocol, c.auth_key, c.priv_protocol, c.priv_key),
@@ -55,32 +56,48 @@ class PromptTest(unittest.TestCase):
     def test_v3_only_missing_pieces_are_prompted(self):
         p, _ = scripted([], ["authpass123", "privpass123"])
         opts, _ = build_options(
-            parse_args(["10.0.0.1", "-v", "3", "-u", "netops", "--auth-proto", "sha", "--priv-proto", "aes256"]), p)
+            parse_args(["10.0.0.1", "-v", "3", "-u", "netops", "--auth-proto", "sha", "--priv-proto", "aes256",
+                        "--no-crawl"]), p)
         self.assertEqual((opts.snmp.auth_key, opts.snmp.priv_protocol), ("authpass123", "aes256"))
 
     def test_ssh_prompt(self):
-        # method 3 = ssh, platform 3 = nxos, username, then password + blank enable secret
-        p, _ = scripted(["3", "3", "admin"], ["pw", ""])
+        # method 3 = ssh, platform 3 = nxos, username, then password + blank enable secret, crawl = Enter (yes)
+        p, out = scripted(["3", "3", "admin", ""], ["pw", ""])
         opts, desc = build_options(parse_args(["10.0.0.1"]), p)
         self.assertEqual((opts.ssh_device_type, opts.ssh_user, opts.ssh_password, opts.enable_secret),
                          ("cisco_nxos", "admin", "pw", ""))
         self.assertEqual(desc, "SSH (cisco_nxos) as admin")
+        self.assertIn("scan them with the same SSH login? [Y/n]", out.getvalue())
+        self.assertEqual(opts.depth, UNLIMITED)
+
+    def test_crawl_answer_no_and_reprompt(self):
+        p, out = scripted(["maybe", "n"], [])
+        opts, _ = build_options(parse_args(["10.0.0.1", "-c", "x"]), p)
+        self.assertEqual(opts.depth, 0)
+        self.assertIn("answer y or n", out.getvalue())
+
+    def test_crawl_flags_skip_the_question(self):
+        p, _ = scripted([], [])
+        self.assertEqual(build_options(parse_args(["10.0.0.1", "-c", "x", "--crawl"]), p)[0].depth, UNLIMITED)
+        self.assertEqual(build_options(parse_args(["10.0.0.1", "-c", "x", "--depth", "2"]), p)[0].depth, 2)
+        self.assertEqual(build_options(parse_args(["10.0.0.1", "-c", "x", "--no-crawl"]), p)[0].depth, 0)
+        self.assertEqual(build_options(parse_args(["10.0.0.1", "-c", "x"]), None)[0].depth, 0)
 
     def test_invalid_choice_reprompts(self):
-        p, out = scripted(["9", "x", "1"], ["pub"])
+        p, out = scripted(["9", "x", "1", "n"], ["pub"])
         opts, _ = build_options(parse_args(["10.0.0.1"]), p)
         self.assertEqual(opts.snmp.community, "pub")
         self.assertEqual(out.getvalue().count("not one of the choices"), 2)
 
     def test_flags_mean_no_prompts(self):
         p, _ = scripted([], [])  # any prompt would raise StopIteration
-        opts, _ = build_options(parse_args(["10.0.0.1", "-c", "corp-ro"]), p)
+        opts, _ = build_options(parse_args(["10.0.0.1", "-c", "corp-ro", "--no-crawl"]), p)
         self.assertEqual(opts.snmp.community, "corp-ro")
 
     def test_environment_used_instead_of_prompt(self):
         p, _ = scripted([], [])
         with mock.patch.dict(os.environ, {"SWITCHSCAN_SSH_PASSWORD": "envpw"}):
-            opts, _ = build_options(parse_args(["10.0.0.1", "--ssh", "cisco_ios", "--ssh-user", "a"]), p)
+            opts, _ = build_options(parse_args(["10.0.0.1", "--ssh", "cisco_ios", "--ssh-user", "a", "--crawl"]), p)
         self.assertEqual(opts.ssh_password, "envpw")
 
     def test_no_prompt_mode_uses_defaults_or_errors(self):

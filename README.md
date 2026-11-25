@@ -71,19 +71,42 @@ SSH username: admin
 SSH password:
 Enable secret (press Enter if not needed):
 
-Scanning 10.0.99.1 via SSH (cisco_ios) as admin
+Find the other switches through CDP/LLDP and scan them with the same SSH login? [Y/n]:
+
+Scanning 10.0.99.1 via SSH (cisco_ios) as admin, crawling to every switch found (up to 50)
 ```
 
 Passwords, passphrases and community strings are hidden as you type. SNMPv3 passphrases must be
 at least 8 characters, and it asks again if one is too short. It prompts only for what you didn't
-supply, so `-v 3 -u netops` still asks for the two passphrases. The credentials you enter are also
-used for any neighbors reached with `--depth`. In scripts, pass `--no-prompt` (and `-n NAME`) and
-supply secrets through the environment variables listed below.
+supply, so `-v 3 -u netops` still asks for the two passphrases. In scripts, pass `--no-prompt`
+(plus `-n NAME` and `--crawl` or `--no-crawl`) and supply secrets through the environment variables
+listed below.
 
-Scan over SNMP v2c without prompts:
+### Crawling the network
+
+Answer **Y** to the crawl question (or pass `--crawl`) and switchscan finds the rest of the network
+by itself:
+
+1. It scans the switch you gave it and reads its CDP and LLDP neighbors.
+2. Every neighbor that is a switch or router and advertises a management IP is logged in to with
+   the same SSH user and password (or SNMP credentials).
+3. Those switches' neighbors are scanned in turn, until no new switches turn up.
+
+Over SSH, each neighbor's platform (IOS/IOS-XE, NX-OS or Arista EOS) is worked out from what it
+advertises over CDP/LLDP, so a mixed Cisco/Arista network crawls correctly from one starting switch.
+A neighbor that gives no platform details is assumed to run the same OS as the switch that reported
+it. Vendors switchscan can't read over SSH (Aruba, Juniper, Meraki and so on) are listed as
+skipped rather than logged in to. Switches that refuse the login or can't be reached are listed at
+the end of the scan, and the crawl carries on without them.
+
+Phones, access points, servers and anything without a management IP are recorded on the diagram but
+never logged in to. The crawl stops after `--max-devices` switches (50 by default). `--depth N`
+limits it to N hops from the starting switch.
+
+Scan over SNMP v2c without prompts, crawling every switch found:
 
 ```powershell
-python -m switchscan 10.0.99.1 -c public --open
+python -m switchscan 10.0.99.1 -c public --crawl --no-prompt --open
 ```
 
 Scan a switch and everything it connects to, up to 2 hops away:
@@ -101,7 +124,7 @@ python -m switchscan 10.0.99.1 -v 3 -u netops --auth-proto sha256 --priv-proto a
 SSH instead of SNMP (Cisco IOS/IOS-XE/NX-OS, Arista EOS):
 
 ```powershell
-python -m switchscan 10.0.99.1 --ssh cisco_ios --ssh-user admin
+python -m switchscan 10.0.99.1 --ssh cisco_ios --ssh-user admin --crawl
 ```
 
 Other useful options:
@@ -142,9 +165,8 @@ parsed with the ntc-templates TextFSM library.
 - **Links.** Each switch reports its neighbors. The same link seen from both ends, or through both
   LLDP and CDP, is merged into one. Interface names are matched loosely, so `GigabitEthernet1/0/1`
   matches `Gi1/0/1`.
-- **Crawling (`--depth`).** It follows neighbors that advertise a management IP and the bridge,
-  router or switch capability. Phones, APs and hosts are recorded but not scanned. Crawled switches
-  use the same credentials as the first one.
+- **Crawling.** See [Crawling the network](#crawling-the-network). A switch reached through two
+  different addresses is only scanned once, because switches are matched by name.
 - **Endpoints.** A MAC address is learned on every switch along its path. The endpoint's location is
   the port that doesn't lead to another switch. IPs come from every ARP table collected, so an
   L3 core's ARP table fills in IPs for hosts on the access switches. If a MAC is only ever seen on an
@@ -169,6 +191,8 @@ python -m unittest discover -s tests -v
 - `test_topology`: crawling, link merging, endpoint location, and the named/dated output folders
   with one folder per switch.
 - `test_ssh_parse`: parsing of captured Cisco IOS command output.
+- `test_ssh_crawl`: crawling a mixed Cisco IOS / NX-OS / Arista network over SSH with one login,
+  including skipped vendors, failed logins and crawl limits.
 - `test_cli`: the credential and topology-name prompts, using scripted answers.
 - `test_snmpsim`: serves the demo network from the snmpsim SNMP agent on localhost and scans it
   with the real SNMP code (v1, v2c, v3 auth+priv, Cisco per-VLAN tables, wrong community).

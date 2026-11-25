@@ -193,6 +193,7 @@ def collect_ssh(
     with ConnectHandler(**params) as conn:
         if enable_secret:
             conn.enable()
+        prompt_name = (conn.base_prompt or "").strip()
         for key, command in COMMANDS[platform].items():
             if key == "mac" and not collect_macs:
                 continue
@@ -207,6 +208,8 @@ def collect_ssh(
                 errors.append(f"{command}: {exc}")
 
     device = build_device(host, parsed)
+    if not device.sys_name:  # Arista's "show version" has no hostname; the CLI prompt does
+        device.sys_name = prompt_name
     device.errors.extend(errors)
     device.raw_output = raw_output
     return device

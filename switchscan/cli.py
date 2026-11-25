@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from .report import FORMATS, run_folder, switch_folder_names, write_reports, write_switch_folders
-from .scanner import ScanOptions, scan
+from .scanner import UNLIMITED, ScanOptions, scan
 from .snmp import AUTH_PROTOCOLS, PRIV_PROTOCOLS, SnmpCredentials
 
 SSH_DEVICE_TYPES = [
@@ -33,9 +33,10 @@ EPILOG = """\
 examples:
   switchscan --demo
   switchscan 10.0.99.1                               # prompts for how to connect
-  switchscan 10.0.99.1 -c public --depth 2          # crawl LLDP/CDP neighbors
+  switchscan 10.0.99.1 -c public --crawl            # scan every switch found via CDP/LLDP
+  switchscan 10.0.99.1 -c public --depth 2          # crawl at most 2 hops
   switchscan 10.0.99.1 -v 3 -u netops --auth-proto sha256 --priv-proto aes
-  switchscan 10.0.99.1 --ssh cisco_ios --ssh-user admin
+  switchscan 10.0.99.1 --ssh cisco_ios --ssh-user admin --crawl
 
 Anything not given on the command line is prompted for before the scan starts
 (passwords are hidden as you type). Use --no-prompt in scripts.
@@ -63,9 +64,15 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--format", default=",".join(FORMATS),
                    help=f"comma-separated output formats: {', '.join(FORMATS)} (default: all)")
     p.add_argument("--open", action="store_true", help="open the HTML report when done")
-    p.add_argument("--depth", type=int, default=0,
-                   help="follow LLDP/CDP neighbors this many hops (default: 0 = only the given hosts)")
-    p.add_argument("--max-devices", type=int, default=50, help="stop crawling after this many devices")
+    c = p.add_mutually_exclusive_group()
+    c.add_argument("--crawl", action="store_true",
+                   help="find the other switches through CDP/LLDP and scan them all with the same "
+                        "credentials (asked about interactively if no crawl option is given)")
+    c.add_argument("--depth", type=int,
+                   help="crawl only this many hops from the given hosts (0 = only the given hosts)")
+    c.add_argument("--no-crawl", action="store_true", help="scan only the given hosts")
+    p.add_argument("--max-devices", type=int, default=50,
+                   help="never try more than this many switches in one scan (default: %(default)s)")
     p.add_argument("--no-mac", action="store_true", help="skip the MAC address table (faster on big switches)")
     p.add_argument("--no-prompt", action="store_true",
                    help="never prompt; use command-line options, environment variables and defaults only")
@@ -131,6 +138,19 @@ class Prompter:
                 self._say(f"  must be at least {min_len} characters")
             else:
                 return value
+
+    def yes_no(self, label: str, default: bool = True) -> bool:
+        while True:
+            self._out.write(f"{label} [{'Y/n' if default else 'y/N'}]: ")
+            self._out.flush()
+            raw = self._input("").strip().lower()
+            if not raw:
+                return default
+            if raw in ("y", "yes"):
+                return True
+            if raw in ("n", "no"):
+                return False
+            self._say("  answer y or n")
 
     def choice(self, label: str, options: list[tuple[str, str]], default: str) -> str:
         self._say(label)
@@ -239,9 +259,29 @@ def gather_credentials(args: argparse.Namespace, opts: ScanOptions, prompter: Pr
     return f"SNMPv{version}" + (" (community 'public')" if community == "public" else "")
 
 
+def crawl_depth(args: argparse.Namespace, prompter: Prompter | None, method: str) -> int:
+    """How far to follow neighbors: --depth, --crawl/--no-crawl, else ask (default yes)."""
+    if args.depth is not None:
+        return max(0, args.depth)
+    if args.crawl:
+        return UNLIMITED
+    if args.no_crawl or prompter is None:
+        return 0
+    login = "SSH login" if method.startswith("SSH") else "SNMP credentials"
+    print("", file=sys.stderr)
+    crawl = prompter.yes_no(f"Find the other switches through CDP/LLDP and scan them with the same {login}?")
+    return UNLIMITED if crawl else 0
+
+
+def describe_crawl(depth: int, max_devices: int) -> str:
+    if depth < 0:
+        return f", crawling to every switch found (up to {max_devices})"
+    return f", following neighbors {depth} hop(s)" if depth else ""
+
+
 def build_options(args: argparse.Namespace, prompter: Prompter | None = None) -> tuple[ScanOptions, str]:
     opts = ScanOptions(
-        depth=args.depth, max_devices=args.max_devices, collect_macs=not args.no_mac,
+        max_devices=args.max_devices, collect_macs=not args.no_mac,
         snmp_port=args.port, timeout=args.timeout, retries=args.retries,
         progress=lambda msg: print(msg, file=sys.stderr, flush=True),
     )
@@ -249,8 +289,11 @@ def build_options(args: argparse.Namespace, prompter: Prompter | None = None) ->
         from .demo import demo_walker_factory
 
         opts.walker_factory = demo_walker_factory()
+        opts.depth = UNLIMITED if args.depth is None and not args.no_crawl else max(0, args.depth or 0)
         return opts, "simulated demo network"
-    return opts, gather_credentials(args, opts, prompter)
+    method = gather_credentials(args, opts, prompter)
+    opts.depth = crawl_depth(args, prompter, method)
+    return opts, method
 
 
 def topology_name(args: argparse.Namespace, topo, prompter: Prompter | None) -> str:
@@ -274,8 +317,7 @@ def main(argv=None) -> int:
     name_prompter = Prompter() if interactive else None
     prompter = name_prompter if not args.demo else None
     if prompter:
-        print(f"Credentials for {', '.join(args.hosts)}"
-              + (" (also used for neighbors found by --depth)" if args.depth else ""), file=sys.stderr)
+        print(f"Credentials for {', '.join(args.hosts)}", file=sys.stderr)
     try:
         opts, method = build_options(args, prompter)
     except (KeyboardInterrupt, EOFError):
@@ -283,10 +325,7 @@ def main(argv=None) -> int:
         return 130
 
     hosts = args.hosts or (["10.0.99.1"] if args.demo else [])
-    if args.demo and args.depth == 0:
-        opts.depth = 2  # show off crawling in the demo
-    print(f"\nScanning {', '.join(hosts)} via {method}"
-          + (f", following neighbors {opts.depth} hop(s)" if opts.depth else "") + "\n",
+    print(f"\nScanning {', '.join(hosts)} via {method}" + describe_crawl(opts.depth, opts.max_devices) + "\n",
           file=sys.stderr, flush=True)
 
     topo = asyncio.run(scan(hosts, opts))
@@ -303,7 +342,10 @@ def main(argv=None) -> int:
     for link in topo.links:
         print(f"  {link.a} {link.a_port}  <->  {link.b} {link.b_port}   [{'+'.join(link.protocols)}]")
     for f in topo.failures:
-        print(f"  could not scan {f['host']}: {f['error']}")
+        if f["error"].startswith("not scanned:"):
+            print(f"  skipped {f['host']}: {f['error'][len('not scanned: '):]}")
+        else:
+            print(f"  could not scan {f['host']}: {f['error']}")
     for d in topo.devices:
         for e in d.errors:
             print(f"  warning ({d.id}): {e}")
