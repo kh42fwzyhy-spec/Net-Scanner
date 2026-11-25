@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "switchscan"
+version = "0.1.0"
+description = "Scan network switches over SNMP or SSH and map their topology"
+requires-python = ">=3.10"
+dependencies = ["pysnmp>=7.1", "netmiko>=4.3"]
+
+[project.optional-dependencies]
+test = ["snmpsim>=1.1"]
+
+[project.scripts]
+switchscan = "switchscan.cli:main"
+
+[tool.setuptools]
+packages = ["switchscan"]

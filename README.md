@@ -1,0 +1,174 @@
+# switchscan
+
+Scans network switches and pulls their topology: LLDP/CDP neighbors, interfaces, VLANs,
+MAC address tables and ARP. It can follow neighbors from switch to switch, and it works out
+which access port each device (MAC/IP) is plugged into.
+
+When a scan finishes, it asks for a name for the topology (press Enter to use the first switch's
+name) and saves the run in its own dated folder:
+
+```text
+scan-output/
+  HQ Campus/
+    2026-11-24_14-30-05/
+      topology.html  topology.json  topology.dot
+      links.csv  neighbors.csv  ports.csv  mac_table.csv  arp.csv  endpoints.csv
+      core-sw1/
+        device.json  ports.csv  interfaces.csv  neighbors.csv  mac_table.csv  arp.csv  vlans.csv
+        cli/          (SSH scans only: the raw output of each show command)
+      access-sw1/
+      access-sw2/
+```
+
+Scanning the same topology again adds a new dated folder next to the old one, so earlier runs are
+kept.
+
+| File | What's in it |
+|---|---|
+| `topology.html` | Interactive diagram plus searchable tables (ports, neighbors, MACs, ARP, VLANs, endpoints, links). Open it in any browser. It works offline. |
+| `topology.json` | Everything collected, for scripts and other tools |
+| `links.csv`, `neighbors.csv`, `ports.csv`, `mac_table.csv`, `arp.csv`, `endpoints.csv` | Tables for the whole topology that you can open in Excel |
+| `topology.dot` | Graphviz diagram (`dot -Tsvg topology.dot -o topology.svg`) |
+| `<switch name>/` | One folder per switch found, holding only that switch's data |
+
+## Setup
+
+Requires Python 3.10+.
+
+```powershell
+cd switch-topology
+python -m pip install --user pysnmp netmiko
+```
+
+Run everything below from the `switch-topology` folder (or install it with
+`python -m pip install --user -e .` to get a `switchscan` command).
+
+## Usage
+
+Try it without a switch. This scans a built-in simulated 3-switch network:
+
+```powershell
+python -m switchscan --demo --open
+```
+
+Scan a real switch. With no credential options, it asks how to connect before scanning:
+
+```powershell
+python -m switchscan 10.0.99.1 --open
+```
+
+```text
+How should switchscan log in to the switch?
+  1) SNMP v2c (community string)  (default)
+  2) SNMP v3 (user + passphrases)
+  3) SSH (CLI login)
+  4) SNMP v1
+Choose 1-4 [1]: 3
+Switch platform:
+  1) Cisco IOS  (default)
+  ...
+SSH username: admin
+SSH password:
+Enable secret (press Enter if not needed):
+
+Scanning 10.0.99.1 via SSH (cisco_ios) as admin
+```
+
+Passwords, passphrases and community strings are hidden as you type. SNMPv3 passphrases must be
+at least 8 characters, and it asks again if one is too short. It prompts only for what you didn't
+supply, so `-v 3 -u netops` still asks for the two passphrases. The credentials you enter are also
+used for any neighbors reached with `--depth`. In scripts, pass `--no-prompt` (and `-n NAME`) and
+supply secrets through the environment variables listed below.
+
+Scan over SNMP v2c without prompts:
+
+```powershell
+python -m switchscan 10.0.99.1 -c public --open
+```
+
+Scan a switch and everything it connects to, up to 2 hops away:
+
+```powershell
+python -m switchscan 10.0.99.1 -c public --depth 2
+```
+
+SNMPv3 with authentication and encryption (the passphrases are prompted for):
+
+```powershell
+python -m switchscan 10.0.99.1 -v 3 -u netops --auth-proto sha256 --priv-proto aes
+```
+
+SSH instead of SNMP (Cisco IOS/IOS-XE/NX-OS, Arista EOS):
+
+```powershell
+python -m switchscan 10.0.99.1 --ssh cisco_ios --ssh-user admin
+```
+
+Other useful options:
+
+- `-o DIR` sets the base output folder (default `scan-output`).
+- `-n NAME` names the topology up front, so it isn't asked for after the scan.
+- `--no-mac` skips the MAC table, which is faster on large switches.
+- `--format html,csv` writes only some of the outputs.
+- `--max-devices N` caps a crawl.
+- `--timeout` and `--retries` tune SNMP for slow links.
+
+Run `python -m switchscan --help` for the full list.
+
+You can supply secrets through environment variables, so they don't end up in shell history:
+`SWITCHSCAN_COMMUNITY`, `SWITCHSCAN_AUTH_KEY`, `SWITCHSCAN_PRIV_KEY`, `SWITCHSCAN_SSH_PASSWORD`,
+`SWITCHSCAN_ENABLE_SECRET`.
+
+## What it reads
+
+**SNMP** (read-only; it never writes to the switch):
+
+| Data | MIB |
+|---|---|
+| Name, model, uptime, location | SNMPv2-MIB `system` |
+| Interfaces, speed, status, descriptions | IF-MIB `ifTable` / `ifXTable` |
+| Neighbors (any vendor) | LLDP-MIB (IEEE 802.1AB) |
+| Neighbors (Cisco) | CISCO-CDP-MIB |
+| MAC table, VLANs, port VLAN | Q-BRIDGE-MIB, BRIDGE-MIB |
+| Cisco MAC table and VLANs | BRIDGE-MIB per VLAN (`community@vlan` / v3 context `vlan-N`), CISCO-VTP-MIB, CISCO-VLAN-MEMBERSHIP-MIB |
+| IP ↔ MAC | IP-MIB ARP tables |
+
+**SSH**: `show version`, `show interfaces status`, `show lldp neighbors detail`,
+`show cdp neighbors detail`, `show mac address-table`, `show ip arp` and `show vlan`. The output is
+parsed with the ntc-templates TextFSM library.
+
+## How the topology is built
+
+- **Links.** Each switch reports its neighbors. The same link seen from both ends, or through both
+  LLDP and CDP, is merged into one. Interface names are matched loosely, so `GigabitEthernet1/0/1`
+  matches `Gi1/0/1`.
+- **Crawling (`--depth`).** It follows neighbors that advertise a management IP and the bridge,
+  router or switch capability. Phones, APs and hosts are recorded but not scanned. Crawled switches
+  use the same credentials as the first one.
+- **Endpoints.** A MAC address is learned on every switch along its path. The endpoint's location is
+  the port that doesn't lead to another switch. IPs come from every ARP table collected, so an
+  L3 core's ARP table fills in IPs for hosts on the access switches. If a MAC is only ever seen on an
+  uplink, it's marked "beyond scan" (the device sits past a switch that wasn't scanned).
+
+## Switch-side requirements
+
+- SNMP read access (v2c community, or a v3 user) from the machine running the scan. The
+  switch's SNMP view must include the MIBs above. Some vendors' default views exclude LLDP or
+  BRIDGE-MIB.
+- LLDP and/or CDP must be enabled for neighbor discovery.
+- On Cisco IOS, the MAC table is read once per VLAN. With SNMPv3 that requires
+  `snmp-server group <grp> v3 priv context vlan- match prefix`.
+
+## Tests
+
+```powershell
+python -m pip install --user snmpsim pysmi   # only needed for the SNMP end-to-end test
+python -m unittest discover -s tests -v
+```
+
+- `test_topology`: crawling, link merging, endpoint location, and the named/dated output folders
+  with one folder per switch.
+- `test_ssh_parse`: parsing of captured Cisco IOS command output.
+- `test_cli`: the credential and topology-name prompts, using scripted answers.
+- `test_snmpsim`: serves the demo network from the snmpsim SNMP agent on localhost and scans it
+  with the real SNMP code (v1, v2c, v3 auth+priv, Cisco per-VLAN tables, wrong community).

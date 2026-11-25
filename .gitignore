@@ -1,0 +1,17 @@
+# Scan results can contain network addresses, MAC tables and device names
+scan-output/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
