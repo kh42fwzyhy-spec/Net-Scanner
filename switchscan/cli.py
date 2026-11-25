@@ -16,7 +16,7 @@ from .scanner import UNLIMITED, ScanOptions, scan
 from .snmp import AUTH_PROTOCOLS, PRIV_PROTOCOLS, SnmpCredentials
 
 SSH_DEVICE_TYPES = [
-    ("cisco_ios", "Cisco IOS"),
+    ("cisco_ios", "Cisco IOS (including older Catalyst 2960, 3560, 3560-CX, 3750)"),
     ("cisco_xe", "Cisco IOS-XE"),
     ("cisco_nxos", "Cisco NX-OS"),
     ("arista_eos", "Arista EOS"),

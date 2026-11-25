@@ -44,6 +44,11 @@ COMMANDS: dict[str, dict[str, str]] = {
 }
 # netmiko device types that share another platform's templates
 PLATFORM_ALIASES = {"cisco_xe": "cisco_ios", "cisco_ios_telnet": "cisco_ios"}
+# Tried in order when a switch rejects the command (older IOS 12.x syntax). The
+# ntc-templates template for the first command also parses these.
+COMMAND_FALLBACKS = {"show mac address-table": ("show mac-address-table",)}
+# Output that means the command didn't run
+REJECTED = ("% Invalid", "% Unknown", "% Ambiguous", "% Incomplete")
 
 
 def template_platform(device_type: str) -> str:
@@ -171,9 +176,15 @@ def collect_ssh(
     collect_macs: bool = True,
     timeout: int = 20,
 ) -> Device:
-    """Log in with netmiko, run the show commands and parse them."""
-    from netmiko import ConnectHandler  # imported lazily: it is slow to load
-    from ntc_templates.parse import parse_output
+    """Log in with netmiko, run the show commands and parse them.
+
+    Works with older switches too (e.g. Catalyst 2960/3560/3560-CX/3750): their
+    SHA-1-only SSH is handled by :mod:`.legacy_ssh`, timeouts allow for slow
+    switch CPUs, and IOS 12.x command spellings are tried when needed.
+    """
+    from ntc_templates.parse import parse_output  # imported lazily: slow to load
+
+    from .legacy_ssh import legacy_algorithms_used, netmiko_class
 
     platform = template_platform(device_type)
     if platform not in COMMANDS:
@@ -181,8 +192,11 @@ def collect_ssh(
             f"SSH collection supports {', '.join(sorted(COMMANDS))} (plus cisco_xe); got {device_type!r}"
         )
     params = dict(
-        device_type=device_type, host=host, port=port, username=username,
-        password=password, conn_timeout=timeout,
+        device_type=device_type, host=host, port=port, username=username, password=password,
+        conn_timeout=timeout,
+        banner_timeout=30,  # older switches take a while to generate DH keys
+        auth_timeout=30,
+        fast_cli=False,     # don't cut timing corners on slow switch CPUs
     )
     if enable_secret:
         params["secret"] = enable_secret
@@ -190,22 +204,38 @@ def collect_ssh(
     parsed: dict[str, list[dict]] = {}
     raw_output: dict[str, str] = {}
     errors: list[str] = []
-    with ConnectHandler(**params) as conn:
+    with netmiko_class(device_type)(**params) as conn:
+        legacy = legacy_algorithms_used(conn.remote_conn_pre.get_transport())
+        if legacy:
+            errors.append("connected with older SHA-1 SSH algorithms (" + ", ".join(legacy)
+                          + "); the scan is fine, but this switch's SSH could use an upgrade")
         if enable_secret:
             conn.enable()
         prompt_name = (conn.base_prompt or "").strip()
         for key, command in COMMANDS[platform].items():
             if key == "mac" and not collect_macs:
                 continue
-            try:
-                raw = conn.send_command(command, read_timeout=60)
-                raw_output[command] = raw
-                if "% Invalid" in raw or "% Unknown" in raw or "not enabled" in raw.lower():
-                    errors.append(f"{command}: {raw.strip().splitlines()[0] if raw.strip() else 'no output'}")
-                    continue
-                parsed[key] = parse_output(platform=platform, command=command, data=raw)
-            except Exception as exc:  # one failing command shouldn't stop the scan
-                errors.append(f"{command}: {exc}")
+            for attempt in (command, *COMMAND_FALLBACKS.get(command, ())):
+                try:
+                    raw = conn.send_command(attempt, read_timeout=120 if key == "mac" else 60)
+                except Exception as exc:  # one failing command shouldn't stop the scan
+                    errors.append(f"{attempt}: {exc}")
+                    break
+                raw_output[attempt] = raw
+                first = raw.strip().splitlines()[0] if raw.strip() else "no output"
+                if any(r in raw for r in REJECTED):
+                    if attempt == (command, *COMMAND_FALLBACKS.get(command, ()))[-1]:
+                        errors.append(f"{attempt}: {first}")
+                    continue  # try the older spelling, if there is one
+                if "not enabled" in raw.lower():  # e.g. "% LLDP is not enabled"
+                    errors.append(f"{attempt}: {first}")
+                    break
+                try:
+                    # parse with the template for the canonical command; it covers the fallbacks
+                    parsed[key] = parse_output(platform=platform, command=command, data=raw)
+                except Exception as exc:
+                    errors.append(f"{attempt}: could not parse output ({exc})")
+                break
 
     device = build_device(host, parsed)
     if not device.sys_name:  # Arista's "show version" has no hostname; the CLI prompt does

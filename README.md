@@ -160,6 +160,26 @@ You can supply secrets through environment variables, so they don't end up in sh
 `show cdp neighbors detail`, `show mac address-table`, `show ip arp` and `show vlan`. The output is
 parsed with the ntc-templates TextFSM library.
 
+### Older Cisco switches (2960, 3560, 3560-CX, 3750 and similar)
+
+Choose **Cisco IOS** (`--ssh cisco_ios`). These switches work without any extra settings:
+
+- **Old SSH crypto.** IOS 12.x and 15.x only offer SHA-1 key exchange
+  (`diffie-hellman-group14-sha1`, `diffie-hellman-group-exchange-sha1`, `diffie-hellman-group1-sha1`)
+  and the `ssh-rsa` host key. Current versions of the SSH library switchscan uses (paramiko) have
+  removed these, so a plain connection fails with "Incompatible ssh peer". switchscan adds them back
+  as a last resort: a switch that supports modern algorithms still gets modern ones, and the SHA-1
+  ones are only used when a switch offers nothing newer. When that happens, the scan notes it as a
+  warning for that switch, because the switch's SSH could use an upgrade.
+- **Slow CPUs.** Logins and long MAC tables get extra time.
+- **IOS 12.x commands.** If `show mac address-table` is rejected, `show mac-address-table` is used
+  instead.
+- **No LLDP.** Many older switches only run CDP. "LLDP is not enabled" is shown as a warning and
+  CDP is used for neighbors.
+
+Not supported: switches that only allow SSH version 1 or Telnet. Run `ip ssh version 2` on the
+switch (it needs a crypto image and an RSA key: `crypto key generate rsa modulus 2048`).
+
 ## How the topology is built
 
 - **Links.** Each switch reports its neighbors. The same link seen from both ends, or through both
@@ -191,6 +211,8 @@ python -m unittest discover -s tests -v
 - `test_topology`: crawling, link merging, endpoint location, and the named/dated output folders
   with one folder per switch.
 - `test_ssh_parse`: parsing of captured Cisco IOS command output.
+- `test_legacy_ssh`: SSH to a fake old Catalyst on localhost that only offers SHA-1 key exchange and
+  `ssh-rsa`, plus IOS 12.x commands and no LLDP. It runs the full SSH collection against it.
 - `test_ssh_crawl`: crawling a mixed Cisco IOS / NX-OS / Arista network over SSH with one login,
   including skipped vendors, failed logins and crawl limits.
 - `test_cli`: the credential and topology-name prompts, using scripted answers.
