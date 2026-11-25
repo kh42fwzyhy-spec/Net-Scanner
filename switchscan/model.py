@@ -85,7 +85,7 @@ class Device:
 class Node:
     id: str
     label: str
-    kind: str  # "scanned" or "neighbor"
+    kind: str  # "scanned", "neighbor" (seen via LLDP/CDP) or "host" (found in the MAC/ARP tables)
     mgmt_ip: str = ""
     platform: str = ""
     capabilities: list[str] = field(default_factory=list)
@@ -120,6 +120,7 @@ class Topology:
     links: list[Link]
     endpoints: list[Endpoint] = field(default_factory=list)
     failures: list[dict] = field(default_factory=list)  # {"host": ..., "error": ...}
+    include_hosts: bool = False  # host computers (servers/PCs) were added as nodes and endpoints
     scanned_at: str = field(
         default_factory=lambda: datetime.now(timezone.utc).isoformat(timespec="seconds")
     )

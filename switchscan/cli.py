@@ -35,6 +35,7 @@ examples:
   switchscan 10.0.99.1                               # prompts for how to connect
   switchscan 10.0.99.1 -c public --crawl            # scan every switch found via CDP/LLDP
   switchscan 10.0.99.1 -c public --depth 2          # crawl at most 2 hops
+  switchscan 10.0.99.1 -c public --crawl --hosts    # also show servers/PCs on their ports
   switchscan 10.0.99.1 -v 3 -u netops --auth-proto sha256 --priv-proto aes
   switchscan 10.0.99.1 --ssh cisco_ios --ssh-user admin --crawl
 
@@ -71,6 +72,11 @@ def parse_args(argv=None) -> argparse.Namespace:
     c.add_argument("--depth", type=int,
                    help="crawl only this many hops from the given hosts (0 = only the given hosts)")
     c.add_argument("--no-crawl", action="store_true", help="scan only the given hosts")
+    hst = p.add_mutually_exclusive_group()
+    hst.add_argument("--hosts", action="store_true", dest="include_hosts",
+                     help="add host computers (servers and PCs) to the topology, each linked to the switch "
+                          "port it is plugged into (off by default)")
+    hst.add_argument("--no-hosts", action="store_true", help="leave host computers out without asking")
     p.add_argument("--max-devices", type=int, default=50,
                    help="never try more than this many switches in one scan (default: %(default)s)")
     p.add_argument("--no-mac", action="store_true", help="skip the MAC address table (faster on big switches)")
@@ -273,6 +279,13 @@ def crawl_depth(args: argparse.Namespace, prompter: Prompter | None, method: str
     return UNLIMITED if crawl else 0
 
 
+def want_hosts(args: argparse.Namespace, prompter: Prompter | None) -> bool:
+    """--hosts / --no-hosts, else ask (default no)."""
+    if args.include_hosts or args.no_hosts or prompter is None:
+        return args.include_hosts
+    return prompter.yes_no("Add host computers (servers, PCs) to the topology?", default=False)
+
+
 def describe_crawl(depth: int, max_devices: int) -> str:
     if depth < 0:
         return f", crawling to every switch found (up to {max_devices})"
@@ -290,9 +303,11 @@ def build_options(args: argparse.Namespace, prompter: Prompter | None = None) ->
 
         opts.walker_factory = demo_walker_factory()
         opts.depth = UNLIMITED if args.depth is None and not args.no_crawl else max(0, args.depth or 0)
+        opts.include_hosts = args.include_hosts
         return opts, "simulated demo network"
     method = gather_credentials(args, opts, prompter)
     opts.depth = crawl_depth(args, prompter, method)
+    opts.include_hosts = want_hosts(args, prompter)
     return opts, method
 
 
@@ -325,7 +340,8 @@ def main(argv=None) -> int:
         return 130
 
     hosts = args.hosts or (["10.0.99.1"] if args.demo else [])
-    print(f"\nScanning {', '.join(hosts)} via {method}" + describe_crawl(opts.depth, opts.max_devices) + "\n",
+    print(f"\nScanning {', '.join(hosts)} via {method}" + describe_crawl(opts.depth, opts.max_devices)
+          + (", including host computers" if opts.include_hosts else "") + "\n",
           file=sys.stderr, flush=True)
 
     topo = asyncio.run(scan(hosts, opts))
@@ -338,8 +354,12 @@ def main(argv=None) -> int:
     out_dir = run_folder(Path(args.out), name)
     written = write_reports(topo, out_dir, formats) + write_switch_folders(topo, out_dir)
 
-    print(f"\n{len(topo.devices)} switch(es) scanned, {len(topo.nodes)} nodes, {len(topo.links)} links")
+    hosts_found = sum(1 for n in topo.nodes if n.kind == "host")
+    print(f"\n{len(topo.devices)} switch(es) scanned, {len(topo.nodes)} nodes, {len(topo.links)} links"
+          + (f" ({hosts_found} host computer(s) from the MAC tables)" if topo.include_hosts else ""))
     for link in topo.links:
+        if "MAC" in link.protocols:
+            continue  # host computers: listed in endpoints.csv rather than here
         print(f"  {link.a} {link.a_port}  <->  {link.b} {link.b_port}   [{'+'.join(link.protocols)}]")
     for f in topo.failures:
         if f["error"].startswith("not scanned:"):

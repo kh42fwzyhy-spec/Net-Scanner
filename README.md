@@ -12,7 +12,7 @@ scan-output/
   HQ Campus/
     2026-11-24_14-30-05/
       topology.html  topology.json  topology.dot
-      links.csv  neighbors.csv  ports.csv  mac_table.csv  arp.csv  endpoints.csv
+      links.csv  neighbors.csv  ports.csv  mac_table.csv  arp.csv  (endpoints.csv with --hosts)
       core-sw1/
         device.json  ports.csv  interfaces.csv  neighbors.csv  mac_table.csv  arp.csv  vlans.csv
         cli/          (SSH scans only: the raw output of each show command)
@@ -25,9 +25,10 @@ kept.
 
 | File | What's in it |
 |---|---|
-| `topology.html` | Interactive diagram plus searchable tables (ports, neighbors, MACs, ARP, VLANs, endpoints, links). Open it in any browser. It works offline. |
+| `topology.html` | Interactive diagram plus searchable tables (ports, neighbors, MACs, ARP, VLANs, links, and host computers with `--hosts`). Open it in any browser. It works offline. |
 | `topology.json` | Everything collected, for scripts and other tools |
-| `links.csv`, `neighbors.csv`, `ports.csv`, `mac_table.csv`, `arp.csv`, `endpoints.csv` | Tables for the whole topology that you can open in Excel |
+| `links.csv`, `neighbors.csv`, `ports.csv`, `mac_table.csv`, `arp.csv` | Tables for the whole topology that you can open in Excel |
+| `endpoints.csv` | Which switch port each host computer is plugged into (only with `--hosts`) |
 | `topology.dot` | Graphviz diagram (`dot -Tsvg topology.dot -o topology.svg`) |
 | `<switch name>/` | One folder per switch found, holding only that switch's data |
 
@@ -72,6 +73,7 @@ SSH password:
 Enable secret (press Enter if not needed):
 
 Find the other switches through CDP/LLDP and scan them with the same SSH login? [Y/n]:
+Add host computers (servers, PCs) to the topology? [y/N]:
 
 Scanning 10.0.99.1 via SSH (cisco_ios) as admin, crawling to every switch found (up to 50)
 ```
@@ -102,6 +104,19 @@ the end of the scan, and the crawl carries on without them.
 Phones, access points, servers and anything without a management IP are recorded on the diagram but
 never logged in to. The crawl stops after `--max-devices` switches (50 by default). `--depth N`
 limits it to N hops from the starting switch.
+
+### Host computers
+
+By default the topology only shows network equipment: switches, routers, firewalls, access points
+and phones. Answer **y** to the host question (or pass `--hosts`) to add host computers too:
+
+- **Servers and PCs that announce themselves over LLDP/CDP**, such as an ESXi host.
+- **Every device found in the switches' MAC tables on an access port**, labelled with its IP (from the
+  ARP tables) or MAC address. These appear as small nodes on a dashed line to the exact switch port
+  they're plugged into.
+
+With hosts on, the report also gets a **Host computers** tab and `endpoints.csv`. Each switch's
+folder always keeps its full MAC and ARP tables either way. `--no-hosts` skips the question.
 
 Scan over SNMP v2c without prompts, crawling every switch found:
 
@@ -187,7 +202,7 @@ switch (it needs a crypto image and an RSA key: `crypto key generate rsa modulus
   matches `Gi1/0/1`.
 - **Crawling.** See [Crawling the network](#crawling-the-network). A switch reached through two
   different addresses is only scanned once, because switches are matched by name.
-- **Endpoints.** A MAC address is learned on every switch along its path. The endpoint's location is
+- **Host computers (`--hosts`).** A MAC address is learned on every switch along its path. The host's location is
   the port that doesn't lead to another switch. IPs come from every ARP table collected, so an
   L3 core's ARP table fills in IPs for hosts on the access switches. If a MAC is only ever seen on an
   uplink, it's marked "beyond scan" (the device sits past a switch that wasn't scanned).

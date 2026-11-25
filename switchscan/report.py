@@ -69,7 +69,12 @@ def port_summary(device) -> list[dict]:
 
 
 def _write_csvs(topo: Topology, out_dir: Path) -> list[Path]:
-    return [
+    endpoints = [
+        _write_csv(out_dir / "endpoints.csv", ["mac", "ip", "vlan", "switch", "port", "edge_port", "behind"],
+                   ([e.mac, e.ip, e.vlan, e.switch, e.port, "yes" if e.edge else "no", e.neighbor]
+                    for e in topo.endpoints)),
+    ] if topo.include_hosts else []
+    return endpoints + [
         _write_csv(out_dir / "links.csv", ["device_a", "port_a", "device_b", "port_b", "protocols"],
                    ([l.a, l.a_port, l.b, l.b_port, "+".join(l.protocols)] for l in topo.links)),
         _write_csv(out_dir / "neighbors.csv",
@@ -80,9 +85,6 @@ def _write_csvs(topo: Topology, out_dir: Path) -> list[Path]:
                     for d in topo.devices for n in d.neighbors)),
         _write_csv(out_dir / "mac_table.csv", ["device", "port", "vlan", "mac", "ip", "status"],
                    ([d.id, m.port, m.vlan, m.mac, m.ip, m.status] for d in topo.devices for m in d.mac_table)),
-        _write_csv(out_dir / "endpoints.csv", ["mac", "ip", "vlan", "switch", "port", "edge_port", "behind"],
-                   ([e.mac, e.ip, e.vlan, e.switch, e.port, "yes" if e.edge else "no", e.neighbor]
-                    for e in topo.endpoints)),
         _write_csv(out_dir / "arp.csv", ["device", "ip", "mac", "interface"],
                    ([d.id, a.ip, a.mac, a.interface] for d in topo.devices for a in d.arp)),
         _write_csv(out_dir / "ports.csv",
@@ -179,7 +181,7 @@ def to_dot(topo: Topology) -> str:
     lines = ["graph topology {", "  graph [overlap=false, splines=true];",
              '  node [shape=box, style="rounded,filled", fontname="Helvetica"];']
     for n in topo.nodes:
-        color = "#cfe2ff" if n.kind == "scanned" else "#eeeeee"
+        color = {"scanned": "#cfe2ff", "host": "#f4f4f4"}.get(n.kind, "#e2e4e8")
         label = n.label + (f"\\n{n.mgmt_ip}" if n.mgmt_ip else "")
         lines.append(f'  "{_dot_escape(n.id)}" [label="{_dot_escape(label)}", fillcolor="{color}"];')
     for l in topo.links:
@@ -231,6 +233,7 @@ main { padding: 8px 24px 40px; display: grid; gap: 16px; }
 svg#graph { width: 100%; height: 560px; display: block; touch-action: none; cursor: grab; }
 svg#graph .link { stroke: var(--line); stroke-width: 2; }
 svg#graph .link.multi { stroke-width: 3.5; }
+svg#graph .link.mac { stroke-width: 1; stroke-dasharray: 3 3; }
 svg#graph text { paint-order: stroke; stroke: var(--panel); stroke-width: 3px; stroke-linejoin: round; }
 svg#graph .portlabel { font-size: 10px; fill: var(--muted); pointer-events: none; }
 svg#graph .nodelabel { font-size: 12px; fill: var(--text); pointer-events: none; font-weight: 600; }
@@ -279,6 +282,7 @@ td.mono, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px
         <span><i style="background:var(--ap)"></i>Wireless AP</span>
         <span><i style="background:var(--phone)"></i>Phone</span>
         <span><i style="background:var(--host)"></i>Host / other</span>
+        <span id="legend-hosts"></span>
         <span>Drag nodes to rearrange. Click a node for details.</span>
       </div>
     </section>
@@ -312,9 +316,12 @@ const totals = [
   ["Nodes", DATA.nodes.length],
   ["Links", DATA.links.length],
   ["Neighbors", DATA.devices.reduce((a, d) => a + d.neighbors.length, 0)],
-  ["Endpoints located", DATA.endpoints.filter(e => e.edge).length],
+  ...(DATA.include_hosts ? [["Host computers", DATA.nodes.filter(n => n.kind === "host").length]] : []),
   ["VLANs", new Set(DATA.devices.flatMap(d => d.vlans.map(v => v.id))).size],
 ];
+$("#legend-hosts").textContent = DATA.include_hosts
+  ? "Dashed lines: host computers found in the MAC tables."
+  : "Host computers are not shown (scan with --hosts to add them).";
 $("#stats").innerHTML = totals.map(([k, v]) => `<div class="stat"><b>${v}</b><span class="muted">${k}</span></div>`).join("");
 if (DATA.failures.length) {
   const f = $("#failures");
@@ -328,6 +335,7 @@ const css = getComputedStyle(document.documentElement);
 function nodeColor(n) {
   const v = name => css.getPropertyValue(name).trim();
   if (n.kind === "scanned") return v("--scanned");
+  if (n.kind === "host") return v("--host");
   const c = n.capabilities || [];
   if (c.includes("telephone") || c.includes("phone")) return v("--phone");
   if (c.includes("wlan-ap")) return v("--ap");
@@ -360,7 +368,7 @@ const gLinks = document.createElementNS(NS, "g"), gNodes = document.createElemen
 svg.append(gLinks, gNodes);
 for (const l of links) {
   l.el = document.createElementNS(NS, "line");
-  l.el.setAttribute("class", "link" + (l.protocols.length > 1 ? " multi" : ""));
+  l.el.setAttribute("class", "link" + (l.protocols.length > 1 ? " multi" : "") + (l.protocols.includes("MAC") ? " mac" : ""));
   l.la = document.createElementNS(NS, "text"); l.la.setAttribute("class", "portlabel"); l.la.textContent = l.a_port;
   l.lb = document.createElementNS(NS, "text"); l.lb.setAttribute("class", "portlabel"); l.lb.textContent = l.b_port;
   const title = document.createElementNS(NS, "title");
@@ -371,14 +379,15 @@ for (const l of links) {
 for (const n of nodes) {
   const g = document.createElementNS(NS, "g");
   const c = document.createElementNS(NS, "circle");
-  c.setAttribute("r", n.kind === "scanned" ? 16 : 10);
+  const r = n.kind === "scanned" ? 16 : n.kind === "host" ? 6 : 10;
+  c.setAttribute("r", r);
   c.setAttribute("fill", nodeColor(n));
   const t = document.createElementNS(NS, "text");
-  t.setAttribute("class", "nodelabel"); t.setAttribute("text-anchor", "middle"); t.setAttribute("dy", n.kind === "scanned" ? 32 : 24);
+  t.setAttribute("class", n.kind === "host" ? "nodesub" : "nodelabel"); t.setAttribute("text-anchor", "middle"); t.setAttribute("dy", r + 14);
   t.textContent = n.label;
   const s = document.createElementNS(NS, "text");
-  s.setAttribute("class", "nodesub"); s.setAttribute("text-anchor", "middle"); s.setAttribute("dy", n.kind === "scanned" ? 45 : 36);
-  s.textContent = n.mgmt_ip || "";
+  s.setAttribute("class", "nodesub"); s.setAttribute("text-anchor", "middle"); s.setAttribute("dy", r + 27);
+  s.textContent = n.kind === "host" || n.mgmt_ip === n.label ? "" : (n.mgmt_ip || "");
   g.append(c, t, s);
   gNodes.append(g);
   n.g = g; n.c = c;
@@ -401,7 +410,8 @@ function tick(alpha) {
     if (!b.fixed) { b.x += dx * f; b.y += dy * f; }
   }
   for (const l of links) {
-    const want = ((l.s.kind === "scanned" && l.t.kind === "scanned") ? 230 : 130) * scale;
+    const want = ((l.s.kind === "scanned" && l.t.kind === "scanned") ? 230
+      : (l.s.kind === "host" || l.t.kind === "host") ? 75 : 130) * scale;
     let dx = l.t.x - l.s.x, dy = l.t.y - l.s.y, d = Math.hypot(dx, dy) || 0.01;
     const f = (d - want) * 0.08 * alpha;
     dx /= d; dy /= d;
@@ -412,18 +422,24 @@ function tick(alpha) {
     n.x += (W / 2 - n.x) * 0.004 * alpha; n.y += (H / 2 - n.y) * 0.006 * alpha;
   }
 }
+// Layout coordinates (rx, ry) are kept apart from screen coordinates (x, y), so
+// fitting to a small viewport (e.g. while the page is hidden) can always be undone.
+let view = {k: 1, cx: 0, cy: 0, ox: 0, oy: 0};
 function fit() {
   // scale the finished layout into the viewport, keeping room for labels
-  const xs = nodes.map(n => n.x), ys = nodes.map(n => n.y);
+  const xs = nodes.map(n => n.rx), ys = nodes.map(n => n.ry);
   const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
   const padX = 70, padTop = 30, padBottom = 55;
-  const k = Math.min((W - 2 * padX) / Math.max(1, x1 - x0), (H - padTop - padBottom) / Math.max(1, y1 - y0), 1.2);
+  const k = Math.max(0.05, Math.min((W - 2 * padX) / Math.max(1, x1 - x0),
+                                    (H - padTop - padBottom) / Math.max(1, y1 - y0), 1.2));
+  view = {k, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, ox: W / 2, oy: padTop + (H - padTop - padBottom) / 2};
   for (const n of nodes) {
-    n.x = W / 2 + (n.x - (x0 + x1) / 2) * k;
-    n.y = padTop + (H - padTop - padBottom) / 2 + (n.y - (y0 + y1) / 2) * k;
+    n.x = view.ox + (n.rx - view.cx) * k;
+    n.y = view.oy + (n.ry - view.cy) * k;
   }
 }
 for (let i = 0, alpha = 1; i < 600; i++, alpha *= 0.993) tick(alpha);
+for (const n of nodes) { n.rx = n.x; n.ry = n.y; }
 fit();
 function draw() {
   for (const l of links) {
@@ -453,7 +469,11 @@ function svgPoint(e) {
 function startDrag(e, n) {
   e.preventDefault();
   n.fixed = true; svg.setPointerCapture(e.pointerId);
-  const move = ev => { [n.x, n.y] = svgPoint(ev); draw(); };
+  const move = ev => {
+    [n.x, n.y] = svgPoint(ev);
+    n.rx = view.cx + (n.x - view.ox) / view.k; n.ry = view.cy + (n.y - view.oy) / view.k;
+    draw();
+  };
   const up = () => { svg.removeEventListener("pointermove", move); svg.removeEventListener("pointerup", up); };
   svg.addEventListener("pointermove", move); svg.addEventListener("pointerup", up);
 }
@@ -490,12 +510,13 @@ const TABS = {
   ARP: d => [["IP", "MAC", "Interface"], d.arp.map(a => [a.ip, {mono: a.mac}, a.interface])],
   VLANs: d => [["VLAN", "Name", "Access ports"], d.vlans.map(v => [v.id, v.name,
     d.interfaces.filter(i => i.vlan === v.id).map(i => i.name).join(", ")])],
-  Endpoints: () => [["Switch", "Port", "VLAN", "MAC", "IP", "Behind", "Location"],
+  "Host computers": () => [["Switch", "Port", "VLAN", "MAC", "IP", "Behind", "Location"],
     DATA.endpoints.map(e => [e.switch, e.port, e.vlan, {mono: e.mac}, e.ip, e.neighbor,
       e.edge ? "access port" : "uplink only (beyond scan)"])],
   Links: () => [["Device A", "Port A", "Device B", "Port B", "Learned via"],
     DATA.links.map(l => [l.a, l.a_port, l.b, l.b_port, l.protocols.join(" + ")])],
 };
+if (!DATA.include_hosts) delete TABS["Host computers"];
 let tab = "Ports", sortCol = null, sortDir = 1;
 $("#device").innerHTML = DATA.devices.map((d, i) => `<option value="${i}">${esc(d.sys_name || d.host)}</option>`).join("");
 $("#tabs").innerHTML = Object.keys(TABS).map(t => `<button data-t="${t}">${t}</button>`).join("");

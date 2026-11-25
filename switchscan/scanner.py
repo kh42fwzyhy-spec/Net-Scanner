@@ -45,6 +45,7 @@ class ScanOptions:
     max_devices: int = 50
     concurrency: int = 8
     collect_macs: bool = True
+    include_hosts: bool = False  # add servers/PCs (LLDP hosts and MAC/ARP endpoints) to the topology
     # Lets demo mode and tests swap in a fake SNMP walker / SSH collector.
     walker_factory: Callable[[str], Walker] | None = None
     ssh_collector: Callable[[str, str], Device] | None = None  # (host, device_type) -> Device
@@ -183,4 +184,4 @@ async def scan(seeds: list[str], opts: ScanOptions) -> Topology:
                 next_frontier[ip] = device_type
         frontier = next_frontier
 
-    return build_topology(devices, failures)
+    return build_topology(devices, failures, include_hosts=opts.include_hosts)

@@ -6,7 +6,32 @@ from .model import Device, Endpoint, Link, Node, Topology
 from .util import natural_key, norm_hostname, norm_ifname
 
 
-def build_topology(devices: list[Device], failures: list[dict] | None = None) -> Topology:
+INFRA_CAPS = {"bridge", "router", "switch"}
+ENDPOINT_CAPS = {"telephone", "phone", "station", "host", "wlan-ap"}
+HOST_CAPS = {"station", "host"}
+NOT_HOST_CAPS = {"router", "switch", "telephone", "phone", "wlan-ap"}
+# Words in an LLDP/CDP system description that give away a server or PC
+HOST_HINTS = ("vmware", "esxi", "linux", "windows", "microsoft", "ubuntu", "debian", "red hat", "centos",
+              "rocky", "macos", "mac os", "freebsd", "proxmox", "hyper-v", "nutanix", "truenas", "synology")
+
+
+def is_host(capabilities: list[str], description: str = "") -> bool:
+    """True for a server or PC (as opposed to a switch, router, phone or access point)."""
+    caps = set(capabilities)
+    if caps & NOT_HOST_CAPS:
+        return False
+    text = description.lower()
+    return bool(caps & HOST_CAPS) or any(h in text for h in HOST_HINTS)
+
+
+def build_topology(devices: list[Device], failures: list[dict] | None = None,
+                   include_hosts: bool = False) -> Topology:
+    """Merge the scanned devices into nodes and links.
+
+    Host computers (servers and PCs) are left out unless ``include_hosts`` is
+    set. Then they are added both from LLDP/CDP (hosts that announce
+    themselves) and from the MAC/ARP tables (every device found on an access port).
+    """
     nodes: dict[str, Node] = {}
     alias: dict[str, str] = {}  # any identifier (name, chassis, MAC, IP) -> node id
 
@@ -49,6 +74,8 @@ def build_topology(devices: list[Device], failures: list[dict] | None = None) ->
     for d in devices:
         a = d._node_id  # type: ignore[attr-defined]
         for n in d.neighbors:
+            if not include_hosts and is_host(n.capabilities, f"{n.remote_platform} {n.remote_description}"):
+                continue
             b = resolve(n)
             node = nodes[b]
             if node.kind == "neighbor":  # enrich stubs with whatever we learn
@@ -62,14 +89,26 @@ def build_topology(devices: list[Device], failures: list[dict] | None = None) ->
             if n.protocol not in link.protocols:
                 link.protocols.append(n.protocol)
 
+    endpoints: list[Endpoint] = []
+    if include_hosts:
+        endpoints = locate_endpoints(devices, scanned_alias)
+        for e in endpoints:
+            if not e.edge or e.mac.lower() in alias or (e.ip and e.ip.lower() in alias):
+                continue  # beyond the scan, or already on the diagram (a phone, an LLDP host, ...)
+            switch = next(d._node_id for d in devices if d.id == e.switch)  # type: ignore[attr-defined]
+            node_id = e.ip or e.mac
+            if node_id in nodes:
+                node_id = e.mac
+            nodes[node_id] = Node(id=node_id, label=e.ip or e.mac, kind="host", mgmt_ip=e.ip,
+                                  platform=f"MAC {e.mac}" + (f", VLAN {e.vlan}" if e.vlan is not None else ""))
+            register(node_id, e.mac)
+            links[frozenset({(switch, norm_ifname(e.port)), (node_id, "")})] = Link(
+                a=switch, a_port=e.port, b=node_id, b_port="", protocols=["MAC"])
+
     for d in devices:
         del d._node_id  # type: ignore[attr-defined]
     return Topology(devices=devices, nodes=list(nodes.values()), links=list(links.values()),
-                    endpoints=locate_endpoints(devices, scanned_alias), failures=failures or [])
-
-
-INFRA_CAPS = {"bridge", "router", "switch"}
-ENDPOINT_CAPS = {"telephone", "phone", "station", "host", "wlan-ap"}
+                    endpoints=endpoints, failures=failures or [], include_hosts=include_hosts)
 
 
 def locate_endpoints(devices: list[Device], alias: dict[str, str]) -> list[Endpoint]:
