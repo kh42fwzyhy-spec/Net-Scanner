@@ -87,7 +87,7 @@ class PromptTest(unittest.TestCase):
         p, out = scripted(["n", ""], [])
         opts, _ = build_options(parse_args(["10.0.0.1", "-c", "x"]), p)
         self.assertFalse(opts.include_hosts)
-        self.assertIn("Add host computers (servers, PCs) to the topology? [y/N]", out.getvalue())
+        self.assertIn("Add end devices (PCs, servers, printers, phones) to the topology? [y/N]", out.getvalue())
         p, _ = scripted(["n", "y"], [])
         self.assertTrue(build_options(parse_args(["10.0.0.1", "-c", "x"]), p)[0].include_hosts)
 

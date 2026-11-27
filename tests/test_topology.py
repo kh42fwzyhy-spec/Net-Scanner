@@ -13,7 +13,6 @@ from switchscan.demo import demo_walker_factory
 from switchscan.model import Device, Topology
 from switchscan.report import run_folder, safe_name, write_reports, write_switch_folders
 from switchscan.scanner import ScanOptions, scan
-from switchscan.topology import is_host
 
 
 class TopologyTest(unittest.TestCase):
@@ -30,19 +29,19 @@ class TopologyTest(unittest.TestCase):
 
     def test_links_deduplicated_across_sides_and_protocols(self):
         links = {(l.a, l.a_port, l.b, l.b_port): l.protocols for l in self.topo.links}
-        self.assertEqual(len(links), 6)
+        self.assertEqual(len(links), 4)
         self.assertEqual(links[("core-sw1", "Ethernet2", "access-sw2", "Gi1/0/48")], ["LLDP", "CDP"])
 
     def test_host_computers_left_out_by_default(self):
         names = {n.label for n in self.topo.nodes}
-        self.assertEqual(names, {"core-sw1", "access-sw1", "access-sw2", "fw01", "SEP001122334455",
-                                 "ap-lobby", "SEP001122334466"})  # esx01/esx02 (servers) are not shown
+        # servers (esx01/esx02) and phones are end devices: not shown
+        self.assertEqual(names, {"core-sw1", "access-sw1", "access-sw2", "fw01", "ap-lobby"})
         self.assertEqual(self.topo.endpoints, [])
         self.assertFalse(any(n.kind == "host" for n in self.topo.nodes))
 
     def test_hosts_option_adds_servers_and_pcs(self):
         names = {n.label for n in self.hosts.nodes}
-        self.assertTrue({"esx01", "esx02"} <= names)  # LLDP hosts
+        self.assertTrue({"esx01", "esx02", "SEP001122334455", "SEP001122334466"} <= names)  # LLDP/CDP
         pc = next(n for n in self.hosts.nodes if n.label == "10.0.10.31")  # found in the MAC/ARP tables
         self.assertEqual(pc.kind, "host")
         link = next(l for l in self.hosts.links if pc.id in (l.a, l.b))
@@ -51,16 +50,6 @@ class TopologyTest(unittest.TestCase):
         self.assertEqual(len({n.id for n in self.hosts.nodes}), len(self.hosts.nodes))
         self.assertNotIn("00:11:22:33:44:55", names)
         self.assertNotIn("00:50:56:aa:00:01", names)
-
-    def test_is_host(self):
-        self.assertTrue(is_host(["station"]))
-        self.assertTrue(is_host([], "VMware ESXi 8.0.2 build-22380479"))
-        self.assertTrue(is_host(["bridge"], "Linux 6.1 Debian"))
-        self.assertFalse(is_host(["station", "telephone"]))  # phone
-        self.assertFalse(is_host(["bridge", "wlan-ap"], "Linux ap-lobby"))  # access point
-        self.assertFalse(is_host(["router", "switch"], "Cisco IOS"))
-        self.assertFalse(is_host([], "Arista Networks EOS"))
-        self.assertFalse(is_host([]))
 
     def test_endpoints_resolve_to_access_ports(self):
         ep = {e.mac: e for e in self.hosts.endpoints}

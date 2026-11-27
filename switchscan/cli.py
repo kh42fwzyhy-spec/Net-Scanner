@@ -35,7 +35,7 @@ examples:
   switchscan 10.0.99.1                               # prompts for how to connect
   switchscan 10.0.99.1 -c public --crawl            # scan every switch found via CDP/LLDP
   switchscan 10.0.99.1 -c public --depth 2          # crawl at most 2 hops
-  switchscan 10.0.99.1 -c public --crawl --hosts    # also show servers/PCs on their ports
+  switchscan 10.0.99.1 -c public --crawl --hosts    # also show PCs/servers/phones
   switchscan 10.0.99.1 -v 3 -u netops --auth-proto sha256 --priv-proto aes
   switchscan 10.0.99.1 --ssh cisco_ios --ssh-user admin --crawl
 
@@ -74,9 +74,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     c.add_argument("--no-crawl", action="store_true", help="scan only the given hosts")
     hst = p.add_mutually_exclusive_group()
     hst.add_argument("--hosts", action="store_true", dest="include_hosts",
-                     help="add host computers (servers and PCs) to the topology, each linked to the switch "
-                          "port it is plugged into (off by default)")
-    hst.add_argument("--no-hosts", action="store_true", help="leave host computers out without asking")
+                     help="add end devices (PCs, servers, printers, phones) to the topology, each linked to "
+                          "the switch port it is plugged into (off by default)")
+    hst.add_argument("--no-hosts", action="store_true", help="leave end devices out without asking")
     p.add_argument("--max-devices", type=int, default=50,
                    help="never try more than this many switches in one scan (default: %(default)s)")
     p.add_argument("--no-mac", action="store_true", help="skip the MAC address table (faster on big switches)")
@@ -283,7 +283,7 @@ def want_hosts(args: argparse.Namespace, prompter: Prompter | None) -> bool:
     """--hosts / --no-hosts, else ask (default no)."""
     if args.include_hosts or args.no_hosts or prompter is None:
         return args.include_hosts
-    return prompter.yes_no("Add host computers (servers, PCs) to the topology?", default=False)
+    return prompter.yes_no("Add end devices (PCs, servers, printers, phones) to the topology?", default=False)
 
 
 def describe_crawl(depth: int, max_devices: int) -> str:

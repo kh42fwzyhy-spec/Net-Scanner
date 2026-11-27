@@ -2,35 +2,23 @@
 
 from __future__ import annotations
 
+from .classify import END_DEVICES, INFRA, classify, classify_neighbor, is_end_device
 from .model import Device, Endpoint, Link, Node, Topology
 from .util import natural_key, norm_hostname, norm_ifname
 
 
-INFRA_CAPS = {"bridge", "router", "switch"}
-ENDPOINT_CAPS = {"telephone", "phone", "station", "host", "wlan-ap"}
-HOST_CAPS = {"station", "host"}
-NOT_HOST_CAPS = {"router", "switch", "telephone", "phone", "wlan-ap"}
-# Words in an LLDP/CDP system description that give away a server or PC
-HOST_HINTS = ("vmware", "esxi", "linux", "windows", "microsoft", "ubuntu", "debian", "red hat", "centos",
-              "rocky", "macos", "mac os", "freebsd", "proxmox", "hyper-v", "nutanix", "truenas", "synology")
-
-
-def is_host(capabilities: list[str], description: str = "") -> bool:
-    """True for a server or PC (as opposed to a switch, router, phone or access point)."""
-    caps = set(capabilities)
-    if caps & NOT_HOST_CAPS:
-        return False
-    text = description.lower()
-    return bool(caps & HOST_CAPS) or any(h in text for h in HOST_HINTS)
+def is_host(capabilities: list[str], description: str = "", name: str = "") -> bool:
+    """True for an end device (PC, server, printer, phone) rather than network gear."""
+    return classify(capabilities, "", description, name) in END_DEVICES
 
 
 def build_topology(devices: list[Device], failures: list[dict] | None = None,
                    include_hosts: bool = False) -> Topology:
     """Merge the scanned devices into nodes and links.
 
-    Host computers (servers and PCs) are left out unless ``include_hosts`` is
-    set. Then they are added both from LLDP/CDP (hosts that announce
-    themselves) and from the MAC/ARP tables (every device found on an access port).
+    End devices (PCs, servers, printers, phones; see :mod:`.classify`) are left
+    out unless ``include_hosts`` is set. Then they are added both from LLDP/CDP
+    and from the MAC/ARP tables (every device found on an access port).
     """
     nodes: dict[str, Node] = {}
     alias: dict[str, str] = {}  # any identifier (name, chassis, MAC, IP) -> node id
@@ -74,7 +62,7 @@ def build_topology(devices: list[Device], failures: list[dict] | None = None,
     for d in devices:
         a = d._node_id  # type: ignore[attr-defined]
         for n in d.neighbors:
-            if not include_hosts and is_host(n.capabilities, f"{n.remote_platform} {n.remote_description}"):
+            if not include_hosts and is_end_device(n):
                 continue
             b = resolve(n)
             node = nodes[b]
@@ -125,9 +113,8 @@ def locate_endpoints(devices: list[Device], alias: dict[str, str]) -> list[Endpo
     for d in devices:
         for n in d.neighbors:
             key = (d.id, norm_ifname(n.local_port))
-            caps = set(n.capabilities)
             scanned = any(k and k.lower() in alias for k in (n.remote_chassis_id, norm_hostname(n.remote_name)))
-            if scanned or (caps & INFRA_CAPS and not caps & ENDPOINT_CAPS):
+            if scanned or classify_neighbor(n) == INFRA:
                 uplinks.add(key)
             else:
                 port_neighbor.setdefault(key, n.remote_name or n.remote_chassis_id)

@@ -33,7 +33,7 @@ NETWORK = {
         cdp("Eth1/10", "leaf1", "10.1.0.4", "", "Arista Networks EOS version 4.30.1F", "B,R"),
     ]}),
     "10.1.0.4": ("leaf1", {"lldp": [
-        cdp("Ethernet1", "access1", "10.1.0.9", "", "", ""),  # advertises nothing about itself
+        cdp("Ethernet1", "access1", "10.1.0.9", "", "", "B"),  # a bridge, but no platform details
         cdp("Ethernet2", "access2", "10.1.0.10", "", "", "B"),
     ]}),
     "10.1.0.9": ("access1", {}),

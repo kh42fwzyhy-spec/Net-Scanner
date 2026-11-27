@@ -73,7 +73,7 @@ SSH password:
 Enable secret (press Enter if not needed):
 
 Find the other switches through CDP/LLDP and scan them with the same SSH login? [Y/n]:
-Add host computers (servers, PCs) to the topology? [y/N]:
+Add end devices (PCs, servers, printers, phones) to the topology? [y/N]:
 
 Scanning 10.0.99.1 via SSH (cisco_ios) as admin, crawling to every switch found (up to 50)
 ```
@@ -101,22 +101,32 @@ it. Vendors switchscan can't read over SSH (Aruba, Juniper, Meraki and so on) ar
 skipped rather than logged in to. Switches that refuse the login or can't be reached are listed at
 the end of the scan, and the crawl carries on without them.
 
-Phones, access points, servers and anything without a management IP are recorded on the diagram but
-never logged in to. The crawl stops after `--max-devices` switches (50 by default). `--depth N`
+Only network gear is logged in to: never access points, phones, servers or PCs (even an ESXi host that
+advertises itself as a switch), and never anything without a management IP. The crawl stops after `--max-devices` switches (50 by default). `--depth N`
 limits it to N hops from the starting switch.
 
-### Host computers
+### End devices (host computers and phones)
 
-By default the topology only shows network equipment: switches, routers, firewalls, access points
-and phones. Answer **y** to the host question (or pass `--hosts`) to add host computers too:
+By default the topology only shows network equipment: switches, routers, firewalls and access points.
+End devices (PCs, servers, printers, cameras, storage and IP phones) are left off. Answer **y** to the
+end-device question (or pass `--hosts`) to add them:
 
-- **Servers and PCs that announce themselves over LLDP/CDP**, such as an ESXi host.
+- **End devices that announce themselves over LLDP/CDP**, such as ESXi hosts and phones.
 - **Every device found in the switches' MAC tables on an access port**, labelled with its IP (from the
   ARP tables) or MAC address. These appear as small nodes on a dashed line to the exact switch port
   they're plugged into.
 
-With hosts on, the report also gets a **Host computers** tab and `endpoints.csv`. Each switch's
-folder always keeps its full MAC and ARP tables either way. `--no-hosts` skips the question.
+With them on, the report also gets a **Host computers** tab and `endpoints.csv`. Each switch's folder
+always keeps its full MAC, ARP and neighbor tables either way. `--no-hosts` skips the question.
+
+**How end devices are recognised.** The capability flags a device advertises aren't trusted on their
+own: ESXi hosts call themselves a "Switch", Linux servers running lldpd usually say "Bridge, Router",
+and many PCs and docks send no flags at all. So switchscan reads the platform and OS description first.
+A network OS (Cisco IOS/NX-OS, Arista EOS, Aruba, Junos, FortiGate, pfSense, Cumulus and so on) means
+network gear. A server/PC OS, printer, camera or NAS means an end device. The flags are only used when
+the description doesn't say. A neighbor with no description and no flags is treated as an end device,
+because switches always send a description. The crawl uses the same check, so switchscan only ever
+logs in to network gear, never to a server that calls itself a switch.
 
 Scan over SNMP v2c without prompts, crawling every switch found:
 
@@ -200,7 +210,8 @@ switch (it needs a crypto image and an RSA key: `crypto key generate rsa modulus
 - **Links.** Each switch reports its neighbors. The same link seen from both ends, or through both
   LLDP and CDP, is merged into one. Interface names are matched loosely, so `GigabitEthernet1/0/1`
   matches `Gi1/0/1`.
-- **Crawling.** See [Crawling the network](#crawling-the-network). A switch reached through two
+- **Crawling.** See [Crawling the network](#crawling-the-network). Only neighbors recognised as
+  network gear are logged in to (see [End devices](#end-devices-host-computers-and-phones)). A switch reached through two
   different addresses is only scanned once, because switches are matched by name.
 - **Host computers (`--hosts`).** A MAC address is learned on every switch along its path. The host's location is
   the port that doesn't lead to another switch. IPs come from every ARP table collected, so an

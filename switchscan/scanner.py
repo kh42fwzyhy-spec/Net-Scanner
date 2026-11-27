@@ -12,15 +12,13 @@ import ipaddress
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .classify import INFRA, classify_neighbor
 from .model import Device, Neighbor, Topology
 from .snmp import SnmpCredentials, SnmpWalker, Walker
 from .snmp_collect import SnmpCollector
 from .topology import build_topology
 from .util import norm_hostname
 
-# Neighbors advertising one of these are network gear worth crawling into.
-CRAWL_CAPS = {"bridge", "router", "switch"}
-SKIP_CAPS = {"telephone", "phone", "station", "host", "wlan-ap"}
 UNLIMITED = -1  # ScanOptions.depth: crawl until no new switches are found
 
 # Vendors seen in CDP/LLDP that the SSH collector has no commands for.
@@ -52,12 +50,13 @@ class ScanOptions:
     progress: Callable[[str], None] = field(default=lambda msg: None)
 
 
-def should_crawl(caps: list[str]) -> bool:
-    # Phones and APs also advertise "bridge", so an endpoint capability wins.
-    caps_set = set(caps)
-    if caps_set & SKIP_CAPS:
-        return False
-    return not caps_set or bool(caps_set & CRAWL_CAPS) or "other" in caps_set
+def should_crawl(n: Neighbor) -> bool:
+    """Only log in to network gear: never to servers, PCs, phones or access points.
+
+    An ESXi host, for example, advertises itself as a "switch"; trusting that
+    would send the switch credentials to it.
+    """
+    return classify_neighbor(n) == INFRA
 
 
 def crawl_address(n: Neighbor) -> str:
@@ -168,7 +167,7 @@ async def scan(seeds: list[str], opts: ScanOptions) -> Topology:
             for n in result.neighbors:
                 ip = crawl_address(n)
                 if (not ip or ip in attempted or ip in next_frontier or ip in skipped
-                        or norm_hostname(n.remote_name) in known_names or not should_crawl(n.capabilities)):
+                        or norm_hostname(n.remote_name) in known_names or not should_crawl(n)):
                     continue
                 device_type = ""
                 if opts.ssh_device_type:
